@@ -1,0 +1,305 @@
+---
+title: "Práctica 2 - Visualización de datos"
+author: "José Luis Zorita Gutiérrez"
+date: "2025-01-12"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Cargar packages utilizados
+
+```{r packages}
+library("ggplot2")
+library("ggstatsplot")
+library("tidyverse")
+library("dplyr")
+library("writexl")
+library("lubridate")
+library("reshape2")
+```
+
+Carga del fichero. Dataset extraído de la web https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Crashes/h9gi-nx95/about_data
+
+```{r load data}
+x=read.csv("Motor_Vehicle_Collisions_-_Crashes_20241219.csv", stringsAsFactors = T)
+dim(x)
+```
+
+De donde se desprende que tiene 2142754 observaciones y 29 columnas.
+
+Resumen del dataset:
+
+```{r summary, echo=FALSE}
+summary(x)
+```
+
+Filtramos los datos para asegurar la calidad de los datos con los que trabajemos:
+
+```{r, echo=FALSE}
+# Tenemos los datos de cómo mínimo los vehículos 1 y 2 y la razón del accidente están especificadas:
+x_filtered <- x %>% filter(!is.na(VEHICLE.TYPE.CODE.1) & VEHICLE.TYPE.CODE.1 != "")
+x_filtered <- x_filtered %>% filter(!is.na(VEHICLE.TYPE.CODE.2) & VEHICLE.TYPE.CODE.2 != "")
+x_filtered <- x_filtered %>% filter(CONTRIBUTING.FACTOR.VEHICLE.1 != "Unspecified")
+x_filtered <- x_filtered %>% filter(!is.na(CONTRIBUTING.FACTOR.VEHICLE.1) & CONTRIBUTING.FACTOR.VEHICLE.1 != "")
+x_filtered <- x_filtered %>% filter(CONTRIBUTING.FACTOR.VEHICLE.2 != "Unspecified")
+x_filtered <- x_filtered %>% filter(!is.na(CONTRIBUTING.FACTOR.VEHICLE.2) & CONTRIBUTING.FACTOR.VEHICLE.2 != "")
+
+# Tenemos los datos cartográficos del lugar del accidente
+x_filtered <- x_filtered %>% filter(!is.na(LATITUDE) & LATITUDE != "")
+x_filtered <- x_filtered %>%  filter(!is.na(LONGITUDE) & LONGITUDE != "")
+
+# Tenemos los datos del municipio y la calle
+x_filtered <- x_filtered %>% filter(!is.na(BOROUGH) & BOROUGH != "")
+x_filtered <- x_filtered %>%  filter(!is.na(ON.STREET.NAME) & ON.STREET.NAME != "")
+
+# Al menos hay una persona fallecida o herida
+x_filtered <- x_filtered %>% filter(NUMBER.OF.PERSONS.KILLED > 0 | NUMBER.OF.PERSONS.INJURED > 0)
+```
+
+Añado dos columnas para contabilizar el número de conductores fallecidos y heridos:
+
+```{r, echo=FALSE}
+x_filtered$NUMBER.OF.DRIVERS.INJURED <- x_filtered$NUMBER.OF.PERSONS.INJURED - (x_filtered$NUMBER.OF.PEDESTRIANS.INJURED + x_filtered$NUMBER.OF.CYCLIST.INJURED + x_filtered$NUMBER.OF.MOTORIST.INJURED)
+x_filtered$NUMBER.OF.DRIVERS.KILLED <- x_filtered$NUMBER.OF.PERSONS.KILLED - (x_filtered$NUMBER.OF.PEDESTRIANS.KILLED + x_filtered$NUMBER.OF.CYCLIST.KILLED + x_filtered$NUMBER.OF.MOTORIST.KILLED)
+x_filtered <- subset(x_filtered, NUMBER.OF.DRIVERS.INJURED >= 0 & NUMBER.OF.DRIVERS.KILLED >= 0)
+```
+
+Añado una columna que indique el día de la semana del accidente:
+
+```{r, echo=FALSE}
+x_filtered$CRASH.DATE <- as.Date(x_filtered$CRASH.DATE, format="%m/%d/%Y")
+x_filtered$DAY.OF.WEEK <- weekdays(x_filtered$CRASH.DATE)
+```
+
+Guardar el nuevo dataset filtrado:
+
+```{r tipo_visita}
+write.csv(x_filtered, file = "crashes_v2.CSV", row.names = FALSE)
+```
+
+Cargar el fichero:
+
+```{r}
+x=read.csv("crashes_v2.CSV", stringsAsFactors = T)
+dim(x)
+```
+```{r, echo=FALSE}
+summary(x)
+```
+
+Contabilizar accidentes según el día de la semana:
+
+```{r, echo=FALSE}
+accident_counts <- table(x$DAY.OF.WEEK)
+accident_counts_df <- as.data.frame(accident_counts)
+```
+
+```{r, echo=FALSE}
+x$CRASH.TIME <- strptime(x$CRASH.TIME, format = "%H:%M")
+```
+
+Crear variable para contabilizar accidentes según franja horaria:
+
+```{r, echo=FALSE}
+x$TIME.SLOT <- cut(
+  hour(x$CRASH.TIME) + minute(x$CRASH.TIME) / 60,
+  breaks = c(0, 6, 12, 15, 19, 22, 24),
+  labels = c("Madrugada", "Mañana", "Mediodía", "Tarde", "Noche", "Madrugada"),
+  right = FALSE
+)
+
+x$TIME.SLOT <- factor(x$TIME.SLOT, levels = c("Madrugada", "Mañana", "Mediodía", "Tarde", "Noche"))
+```
+
+```{r, echo=FALSE, fig.width=10}
+ggplot(data = x, aes(x = DAY.OF.WEEK, fill = TIME.SLOT)) + geom_bar(position = "dodge") + geom_text(stat = 'count', aes(label = ..count..), position = position_dodge(width = 0.9), vjust = -0.5) + labs(title = "Total de accidentes por día de la semana y franja horaria", x = "Día de la semana", y = "Número de accidentes", fill = "Franja horaria") + theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Fallecidos y herido según franja horaria:
+
+```{r, echo=FALSE, fig.width=15}
+x_melted <- melt(x, id.vars = c("TIME.SLOT"), measure.vars = c("NUMBER.OF.PERSONS.INJURED", "NUMBER.OF.PERSONS.KILLED"), variable.name = "TYPE", value.name = "COUNT")
+
+x_summarized <- aggregate(COUNT ~ TIME.SLOT + TYPE, data = x_melted, sum)
+
+ggplot(data = x_summarized, aes(x = TIME.SLOT, y = COUNT, fill = TYPE)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = COUNT), position = position_dodge(width = 0.9), vjust = -0.5) +
+  labs(title = "Total de personas heridas y fallecidas por franja horaria", x = "Franja horaria", y = "Número de personas", fill = "Tipo de incidente") +
+  theme_minimal()
+```
+
+Totales:
+
+```{r, echo=FALSE, fig.width=15}
+total_persons_injured <- sum(x$NUMBER.OF.PERSONS.INJURED, na.rm = TRUE)
+
+total_persons_killed <- sum(x$NUMBER.OF.PERSONS.KILLED, na.rm = TRUE)
+
+total_persons_injured
+total_persons_killed
+
+total_persons_injured + total_persons_killed
+```
+
+Datos cartográficos lugares accidentes con fallecidos:
+
+```{r, echo=FALSE, fig.width=15}
+accidents_with_fatalities <- x[x$NUMBER.OF.PERSONS.KILLED > 0, ]
+accidents_with_fatalities <- accidents_with_fatalities[, c("NUMBER.OF.PERSONS.KILLED", "ON.STREET.NAME", "CROSS.STREET.NAME", "LATITUDE", "LONGITUDE")]
+print(accidents_with_fatalities)
+write.csv2(accidents_with_fatalities, "accidents_with_killed.csv", row.names = FALSE)
+```
+
+Datos cartográficos lugares accidentes con fallecidos madrugada:
+
+```{r, echo=FALSE, fig.width=15}
+accidents_with_fatalitiesM <- x[x$NUMBER.OF.PERSONS.KILLED > 0, ]
+accidents_with_fatalitiesM <- accidents_with_fatalitiesM[accidents_with_fatalitiesM$TIME.SLOT == "Madrugada", ]
+accidents_with_fatalitiesM <- accidents_with_fatalitiesM[, c("NUMBER.OF.PERSONS.KILLED", "ON.STREET.NAME", "CROSS.STREET.NAME", "LATITUDE", "LONGITUDE")]
+print(accidents_with_fatalitiesM)
+write.csv2(accidents_with_fatalitiesM, "accidents_with_killedM.csv", row.names = FALSE)
+```
+
+Datos cartográficos lugares accidentes con más de 5 heridos:
+
+```{r, echo=FALSE, fig.width=15}
+accidents_with_injured <- x[x$NUMBER.OF.PERSONS.INJURED > 5, ]
+accidents_with_injured <- accidents_with_injured[, c("NUMBER.OF.PERSONS.INJURED", "ON.STREET.NAME", "CROSS.STREET.NAME", "LATITUDE", "LONGITUDE")]
+print(accidents_with_injured)
+write.csv2(accidents_with_injured, "accidents_with_injured.csv", row.names = FALSE)
+
+```
+
+Municipios:
+
+```{r, echo=FALSE, fig.width=15}
+unique(x$BOROUGH)
+```
+
+```{r, echo=FALSE, fig.width=15}
+str(str(x$CRASH.DATE))
+```
+
+Evolución accidentes por municipio y semestre:
+
+```{r, echo=FALSE, fig.width=15}
+x2 <- x
+x2$CRASH.DATE <- as.Date(as.character(x2$CRASH.DATE), format="%Y-%m-%d")
+x2$SEMESTER <- ifelse(month(x2$CRASH.DATE) <= 6, paste(year(x2$CRASH.DATE), "1", sep="-"), paste(year(x2$CRASH.DATE), "2", sep="-"))
+
+head(x2)
+
+semesters <- seq(from = as.Date("2012-07-01"), to = as.Date("2024-12-31"), by = "6 months")
+semesters <- data.frame(SEMESTER = paste(year(semesters), ifelse(month(semesters) == 1, "1", "2"), sep="-"))
+
+print(semesters)
+
+accidents_by_semester <- x2 %>% group_by(BOROUGH, SEMESTER) %>%
+  summarize(ACCIDENTS = n(), .groups = "drop")
+
+head(accidents_by_semester)
+
+final_data <- semesters %>% expand(SEMESTER, BOROUGH = unique(x2$BOROUGH)) %>%
+  left_join(accidents_by_semester, by = c("SEMESTER", "BOROUGH")) %>%
+  mutate(ACCIDENTS = replace_na(ACCIDENTS, 0))
+
+head(final_data)
+write.csv2(final_data, "accidents_borough_semester.csv", row.names = FALSE)
+```
+
+Simplificamos los factores de accidente vehículo 1:
+
+```{r, echo=FALSE, fig.width=15}
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Drugs (Illegal)'] <- 'Drugs (illegal)'
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Illnes'] <- 'Illness'
+levels(x$CONTRIBUTING.FACTOR.VEHICLE.1) <- c(levels(x$CONTRIBUTING.FACTOR.VEHICLE.1),"Pavement slippery/defective")
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Pavement Slippery'] <- 'Pavement slippery/defective'
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Pavement Defective'] <- 'Pavement slippery/defective'
+
+levels(x$CONTRIBUTING.FACTOR.VEHICLE.1) <- c(levels(x$CONTRIBUTING.FACTOR.VEHICLE.1),"Cellphone")
+
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Cell Phone (hand-Held)'] <- 'Cellphone'
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Cell Phone (hand-held)'] <- 'Cellphone'
+x$CONTRIBUTING.FACTOR.VEHICLE.1[x$CONTRIBUTING.FACTOR.VEHICLE.1 == 'Cell Phone (hands-free)'] <- 'Cellphone'
+x$CONTRIBUTING.FACTOR.VEHICLE.1 <- droplevels(x$CONTRIBUTING.FACTOR.VEHICLE.1)
+
+# Verificar los cambios
+sort(unique(x$CONTRIBUTING.FACTOR.VEHICLE.1))
+```
+
+Simplificación para el factor del vehículo 2:
+
+```{r, echo=FALSE, fig.width=15}
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Drugs (Illegal)'] <- 'Drugs (illegal)'
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Illnes'] <- 'Illness'
+levels(x$CONTRIBUTING.FACTOR.VEHICLE.2) <- c(levels(x$CONTRIBUTING.FACTOR.VEHICLE.2),"Pavement slippery/defective")
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Pavement Slippery'] <- 'Pavement slippery/defective'
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Pavement Defective'] <- 'Pavement slippery/defective'
+
+levels(x$CONTRIBUTING.FACTOR.VEHICLE.2) <- c(levels(x$CONTRIBUTING.FACTOR.VEHICLE.2),"Cellphone")
+
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Cell Phone (hand-Held)'] <- 'Cellphone'
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Cell Phone (hand-held)'] <- 'Cellphone'
+x$CONTRIBUTING.FACTOR.VEHICLE.2[x$CONTRIBUTING.FACTOR.VEHICLE.2 == 'Cell Phone (hands-free)'] <- 'Cellphone'
+x$CONTRIBUTING.FACTOR.VEHICLE.2 <- droplevels(x$CONTRIBUTING.FACTOR.VEHICLE.2)
+
+# Verificar los cambios
+sort(unique(x$CONTRIBUTING.FACTOR.VEHICLE.2))
+```
+
+Crear dataset en los que únicamente hay 2 vehículos que contribuyen al accidente:
+
+```{r, echo=FALSE, fig.width=15}
+x_3 <- x
+
+x_3$CONTRIBUTING.FACTOR.VEHICLE.2 <- as.character(x_3$CONTRIBUTING.FACTOR.VEHICLE.2)
+x_3$CONTRIBUTING.FACTOR.VEHICLE.3 <- as.character(x_3$CONTRIBUTING.FACTOR.VEHICLE.3)
+x_3$CONTRIBUTING.FACTOR.VEHICLE.4 <- as.character(x_3$CONTRIBUTING.FACTOR.VEHICLE.4)
+x_3$CONTRIBUTING.FACTOR.VEHICLE.5 <- as.character(x_3$CONTRIBUTING.FACTOR.VEHICLE.5)
+
+x_3 <- x_3[x_3$CONTRIBUTING.FACTOR.VEHICLE.3 == "", ]
+x_3 <- x_3[x_3$CONTRIBUTING.FACTOR.VEHICLE.4 == "", ]
+x_3 <- x_3[x_3$CONTRIBUTING.FACTOR.VEHICLE.5 == "", ]
+x_3 <- x_3[!is.na(x_3$CONTRIBUTING.FACTOR.VEHICLE.2), ]
+```
+
+Contabilizar causas accidente entre vehículo 1 y vehículo 2:
+
+```{r, echo=FALSE, fig.width=15}
+interaction_counts <- as.data.frame(table(x$CONTRIBUTING.FACTOR.VEHICLE.1, x$CONTRIBUTING.FACTOR.VEHICLE.2))
+colnames(interaction_counts) <- c("CONTRIBUTING.FACTOR.VEHICLE.1", "CONTRIBUTING.FACTOR.VEHICLE.2", "Count")
+interaction_counts <- interaction_counts[interaction_counts$Count > 0, ]
+write_xlsx(interaction_counts, "interaction_counts.xlsx")
+write_xlsx(x_3, "x_3.xlsx")
+```
+
+Accidentes debido al alcohol según franja horaria:
+
+```{r, echo=FALSE, fig.width=15}
+count_vehicle1 <- x %>% filter(CONTRIBUTING.FACTOR.VEHICLE.1 == "Alcohol Involvement") %>%
+  count(TIME.SLOT) %>% rename(count_vehicle1 = n)
+
+count_vehicle2 <- x %>% filter(CONTRIBUTING.FACTOR.VEHICLE.2 == "Alcohol Involvement") %>%
+  count(TIME.SLOT) %>% rename(count_vehicle2 = n)
+
+combined_counts <- full_join(count_vehicle1, count_vehicle2, by = "TIME.SLOT") %>%
+  mutate(count_vehicle1 = replace_na(count_vehicle1, 0),
+         count_vehicle2 = replace_na(count_vehicle2, 0),
+         total_alcohol_involvement = count_vehicle1 + count_vehicle2)
+
+print(combined_counts)
+```
+
+Accidentes debido al alcohol según día de la semana:
+
+```{r, echo=FALSE, fig.width=15}
+x_alcohol_day <- x %>% filter(CONTRIBUTING.FACTOR.VEHICLE.1 == "Alcohol Involvement") %>% count(DAY.OF.WEEK)
+print(x_alcohol_day)
+```
+
